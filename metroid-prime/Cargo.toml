@@ -1,0 +1,13 @@
+[package]
+name = "metroid-prime"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1"
+flate2 = { version = "1", default-features = false, features = ["zlib-ng-compat"] }
+gamecube = { path = "../gamecube" }
+mmap = "0.1"
