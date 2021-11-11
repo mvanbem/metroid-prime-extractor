@@ -1,2 +1,5 @@
+/out
 /target
 Cargo.lock
+*.blend*
+*.dae

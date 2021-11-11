@@ -41,7 +41,7 @@ impl<'a> Pak<'a> {
             let offset = r.read_u32()?;
             resource_table.push(ResourceTableEntry {
                 compression,
-                _fourcc: fourcc,
+                fourcc: fourcc,
                 file_id,
                 data: &data[offset as usize..(offset + size) as usize],
             });
@@ -53,9 +53,15 @@ impl<'a> Pak<'a> {
         })
     }
 
-    pub fn iter(&self) -> PakIter<'_> {
-        PakIter {
+    pub fn iter_names(&self) -> IterNames<'_> {
+        IterNames {
             iter: self.name_table.iter(),
+        }
+    }
+
+    pub fn iter_resources(&self) -> IterResources<'_> {
+        IterResources {
+            iter: self.resource_table.iter(),
         }
     }
 
@@ -64,58 +70,23 @@ impl<'a> Pak<'a> {
     }
 
     pub fn data(&self, file_id: u32) -> Result<Option<Vec<u8>>> {
-        let resource = match self
-            .resource_table
+        self.resource_table
             .iter()
             .find(|entry| entry.file_id == file_id)
-        {
-            Some(entry) => entry,
-            None => return Ok(None),
-        };
-
-        match resource.compression {
-            0 => Ok(Some(resource.data.to_vec())),
-            1 => {
-                let uncompressed_size = resource.data.clone().read_u32()? as usize;
-                let compressed = &resource.data[4..];
-
-                let mut uncompressed = Vec::with_capacity(uncompressed_size);
-                uncompressed.resize(uncompressed_size, 0);
-                assert_eq!(
-                    Decompress::new(true).decompress(
-                        compressed,
-                        &mut uncompressed,
-                        FlushDecompress::Finish
-                    )?,
-                    flate2::Status::StreamEnd,
-                );
-
-                Ok(Some(uncompressed))
-            }
-            _ => bail!("Unexpected compression: {}", resource.compression),
-        }
+            .map(ResourceTableEntry::data)
+            .transpose()
     }
 }
 
-pub struct PakIter<'a> {
+pub struct IterNames<'a> {
     iter: std::slice::Iter<'a, NameTableEntry>,
 }
 
-impl<'a> Iterator for PakIter<'a> {
+impl<'a> Iterator for IterNames<'a> {
     type Item = NameTableEntry;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.iter.next().cloned()
-    }
-}
-
-impl<'a> IntoIterator for &'a Pak<'_> {
-    type Item = NameTableEntry;
-
-    type IntoIter = PakIter<'a>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.iter()
     }
 }
 
@@ -140,9 +111,56 @@ impl NameTableEntry {
     }
 }
 
-struct ResourceTableEntry<'a> {
+pub struct IterResources<'a> {
+    iter: std::slice::Iter<'a, ResourceTableEntry<'a>>,
+}
+
+impl<'a> Iterator for IterResources<'a> {
+    type Item = ResourceTableEntry<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.iter.next().cloned()
+    }
+}
+
+#[derive(Clone)]
+pub struct ResourceTableEntry<'a> {
     compression: u32,
-    _fourcc: String,
+    fourcc: String,
     file_id: u32,
     data: &'a [u8],
+}
+
+impl<'a> ResourceTableEntry<'a> {
+    pub fn fourcc(&self) -> &str {
+        &self.fourcc
+    }
+
+    pub fn file_id(&self) -> u32 {
+        self.file_id
+    }
+
+    pub fn data(&self) -> Result<Vec<u8>> {
+        match self.compression {
+            0 => Ok(self.data.to_vec()),
+            1 => {
+                let uncompressed_size = self.data.clone().read_u32()? as usize;
+                let compressed = &self.data[4..];
+
+                let mut uncompressed = Vec::with_capacity(uncompressed_size);
+                uncompressed.resize(uncompressed_size, 0);
+                assert_eq!(
+                    Decompress::new(true).decompress(
+                        compressed,
+                        &mut uncompressed,
+                        FlushDecompress::Finish
+                    )?,
+                    flate2::Status::StreamEnd,
+                );
+
+                Ok(uncompressed)
+            }
+            _ => bail!("Unexpected compression: {}", self.compression),
+        }
+    }
 }

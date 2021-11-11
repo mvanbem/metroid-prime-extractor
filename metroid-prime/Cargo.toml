@@ -8,6 +8,10 @@ license = "MIT"
 
 [dependencies]
 anyhow = "1"
+chrono = "0.4"
+dae-parser = "0.5"
 flate2 = { version = "1", default-features = false, features = ["zlib-ng-compat"] }
 gamecube = { path = "../gamecube" }
 mmap = "0.1"
+png = "0.17"
+pretty-hex = "0.2"

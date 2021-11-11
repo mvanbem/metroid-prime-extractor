@@ -6,6 +6,7 @@ use gamecube::bytes::{
     ReadTypedWithContextExt,
 };
 use gamecube::{ReadBytesExt, ReadTypedExt};
+use pretty_hex::PrettyHex;
 
 #[derive(Clone, Debug)]
 pub struct Ancs {
@@ -460,8 +461,8 @@ struct AnimationSet {
     transitions: Vec<Transition>,
     default_transition: MetaTransition,
     additive_animations: Vec<AdditiveAnimation>,
-    default_additive_fade_in_time: f32,
-    default_additive_fade_out_time: f32,
+    default_additive_fade_in_time: Option<f32>,
+    default_additive_fade_out_time: Option<f32>,
     half_transitions: Vec<HalfTransition>,
     animation_resources: Vec<AnimationResource>,
 }
@@ -469,7 +470,7 @@ struct AnimationSet {
 impl ReadFrom for AnimationSet {
     fn read_from<R: Read>(r: &mut R) -> Result<Self> {
         let version = r.read_u16()?;
-        if version != 4 {
+        if version < 2 || version > 4 {
             bail!("unexpected animation set version: {}", version);
         }
 
@@ -486,13 +487,55 @@ impl ReadFrom for AnimationSet {
         }
         let default_transition = r.read_typed()?;
 
+        if version == 2 {
+            let count1 = r.read_u32()?;
+            if count1 != 0 {
+                let mut buf = [0; 256];
+                let n = r.read(&mut buf)?;
+                println!("{:?}", (&buf[..n]).hex_dump());
+                bail!("AnimationSet version 2 count1 is nonzero: {}", count1);
+            }
+
+            let count2 = r.read_u32()?;
+            if count2 != 0 {
+                let mut buf = [0; 256];
+                let n = r.read(&mut buf)?;
+                println!("{:?}", (&buf[..n]).hex_dump());
+                bail!("AnimationSet version 2 count2 is nonzero: {}", count2);
+            }
+
+            let count3 = r.read_u32()?;
+            if count3 != 0 {
+                let mut buf = [0; 256];
+                let n = r.read(&mut buf)?;
+                println!("{:?}", (&buf[..n]).hex_dump());
+                bail!("AnimationSet version 2 count3 is nonzero: {}", count3);
+            }
+
+            return Ok(Self {
+                version,
+                animations,
+                transitions,
+                default_transition,
+                additive_animations: vec![],
+                default_additive_fade_in_time: None,
+                default_additive_fade_out_time: None,
+                half_transitions: vec![],
+                animation_resources: vec![],
+            });
+        }
+
         let count = r.read_u32()?;
         let mut additive_animations = Vec::new();
         for _ in 0..count {
             additive_animations.push(r.read_typed()?);
         }
-        let default_additive_fade_in_time = f32::from_bits(r.read_u32()?);
-        let default_additive_fade_out_time = f32::from_bits(r.read_u32()?);
+        let mut default_additive_fade_in_time = None;
+        let mut default_additive_fade_out_time = None;
+        if version >= 4 {
+            default_additive_fade_in_time = Some(f32::from_bits(r.read_u32()?));
+            default_additive_fade_out_time = Some(f32::from_bits(r.read_u32()?));
+        }
 
         let count = r.read_u32()?;
         let mut half_transitions = Vec::new();
@@ -638,6 +681,13 @@ enum MetaTransition {
         unknown4: bool,
         unknown5: u32,
     },
+    PhaseTransition {
+        unknown1: f32,
+        unknown2: u32,
+        unknown3: bool,
+        unknown4: bool,
+        unknown5: u32,
+    },
     Snap,
 }
 
@@ -663,6 +713,20 @@ impl ReadFrom for MetaTransition {
                     unknown5,
                 }
             }
+            2 => {
+                let unknown1 = f32::from_bits(r.read_u32()?);
+                let unknown2 = r.read_u32()?;
+                let unknown3 = r.read_u8()? != 0;
+                let unknown4 = r.read_u8()? != 0;
+                let unknown5 = r.read_u32()?;
+                MetaTransition::PhaseTransition {
+                    unknown1,
+                    unknown2,
+                    unknown3,
+                    unknown4,
+                    unknown5,
+                }
+            }
             3 => MetaTransition::Snap,
             _ => bail!("unexpected meta transition type: {}", kind),
         })
@@ -670,20 +734,39 @@ impl ReadFrom for MetaTransition {
 }
 
 #[derive(Clone, Debug)]
-struct AdditiveAnimation {}
+struct AdditiveAnimation {
+    animation_id: u32,
+    fade_in_time: f32,
+    fade_out_time: f32,
+}
 
 impl ReadFrom for AdditiveAnimation {
-    fn read_from<R: Read>(_r: &mut R) -> Result<Self> {
-        unimplemented!();
+    fn read_from<R: Read>(r: &mut R) -> Result<Self> {
+        let animation_id = r.read_u32()?;
+        let fade_in_time = f32::from_bits(r.read_u32()?);
+        let fade_out_time = f32::from_bits(r.read_u32()?);
+        Ok(Self {
+            animation_id,
+            fade_in_time,
+            fade_out_time,
+        })
     }
 }
 
 #[derive(Clone, Debug)]
-struct HalfTransition {}
+struct HalfTransition {
+    animation_id: u32,
+    meta_transition: MetaTransition,
+}
 
 impl ReadFrom for HalfTransition {
-    fn read_from<R: Read>(_r: &mut R) -> Result<Self> {
-        unimplemented!();
+    fn read_from<R: Read>(r: &mut R) -> Result<Self> {
+        let animation_id = r.read_u32()?;
+        let meta_transition = r.read_typed()?;
+        Ok(Self {
+            animation_id,
+            meta_transition,
+        })
     }
 }
 
