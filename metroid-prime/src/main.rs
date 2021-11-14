@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -12,9 +14,14 @@ use gamecube::{Disc, ReadTypedExt};
 use mmap::{MapOption, MemoryMap};
 
 use crate::ancs::Ancs;
+use crate::cmdl::Cmdl;
+use crate::mesh::CanonicalMesh;
 use crate::pak::Pak;
 
 mod ancs;
+mod cmdl;
+mod gx;
+mod mesh;
 mod pak;
 mod txtr;
 
@@ -37,14 +44,32 @@ fn main() -> Result<()> {
             .expect("Couldn't find SamusGun.pak")
             .data(),
     )?;
-    let plasma_animation_pak_entry = pak.entry("Plasma").expect("Couldn't find Plasma resource");
-    assert_eq!(plasma_animation_pak_entry.fourcc(), "ANCS");
-    let _ancs: Ancs = pak
-        .data(plasma_animation_pak_entry.file_id())?
+    let wave_ancs_pak_entry = pak.entry("Wave").expect("Couldn't find Wave resource");
+    assert_eq!(wave_ancs_pak_entry.fourcc(), "ANCS");
+    println!("SamusGun.pak/Wave");
+    let wave_ancs: Ancs = pak
+        .data(wave_ancs_pak_entry.file_id())?
         .unwrap()
         .as_slice()
         .read_typed()?;
+    for wave_character in &wave_ancs.character_set.characters {
+        if wave_character.name != "Wave" {
+            continue;
+        }
+        println!("    Character: {}", wave_character.name);
+        let wave_model_cmdl: Cmdl = pak
+            .data(wave_character.model_id)?
+            .unwrap()
+            .as_slice()
+            .read_typed()?;
+        let mesh = CanonicalMesh::new(&pak, &wave_model_cmdl, 0)?;
+        export_collada(&mesh)?;
+    }
 
+    Ok(())
+}
+
+fn process_all_resources(disc: &Disc) -> Result<()> {
     // Attempt to parse every file with a known type.
     for file in disc.iter_files() {
         let file = file?;
@@ -57,7 +82,8 @@ fn main() -> Result<()> {
                     .map(|e| e.name().to_string());
                 let data = pak.data(entry.file_id())?.unwrap();
                 let result = match entry.fourcc() {
-                    "ANCS" => Ancs::read_from(&mut data.as_slice()).map(|_| ()),
+                    "ANCS" => Ancs::read_from(&mut data.as_slice()).map(drop),
+                    "CMDL" => Cmdl::read_from(&mut data.as_slice()).map(drop),
                     "TXTR" => {
                         let mut dump_path = PathBuf::new();
                         dump_path.push("out");
@@ -105,7 +131,10 @@ fn main() -> Result<()> {
             }
         }
     }
+    Ok(())
+}
 
+fn export_collada(mesh: &CanonicalMesh) -> Result<()> {
     // Emit a test COLLADA file.
     let mut file = BufWriter::new(File::create("collada_export.dae")?);
     let now = chrono::Local::now();
@@ -125,8 +154,8 @@ fn main() -> Result<()> {
             up_axis: dae_parser::UpAxis::YUp,
         },
         library: vec![
-            make_geometry_library(),
-            make_controller_library(),
+            make_geometry_library(mesh),
+            make_controller_library(mesh),
             make_visual_scene_library(),
         ],
         scene: Some(make_scene()),
@@ -139,7 +168,11 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn make_geometry_library() -> dae_parser::LibraryElement {
+fn make_geometry_library(mesh: &CanonicalMesh) -> dae_parser::LibraryElement {
+    assert_eq!(mesh.positions.len(), mesh.normals.len());
+    assert_eq!(mesh.positions.len() % 3, 0);
+    let triangle_count = mesh.positions.len() / 3;
+    let vertex_count = mesh.positions.len();
     dae_parser::LibraryElement::Geometries(dae_parser::Library {
         asset: None,
         items: vec![dae_parser::Geometry {
@@ -155,15 +188,17 @@ fn make_geometry_library() -> dae_parser::LibraryElement {
                         asset: None,
                         array: Some(dae_parser::ArrayElement::Float(dae_parser::FloatArray {
                             id: Some("cube_pos_array".to_string()),
-                            val: vec![
-                                -0.5, 0.5, 0.5, 0.5, 0.5, 0.5, -0.5, -0.5, 0.5, 0.5, -0.5, 0.5,
-                                -0.5, 0.5, -0.5, 0.5, 0.5, -0.5, -0.5, -0.5, -0.5, 0.5, -0.5, -0.5,
-                            ]
-                            .into_boxed_slice(),
+                            val: mesh
+                                .positions
+                                .iter()
+                                .copied()
+                                .flatten()
+                                .collect::<Vec<f32>>()
+                                .into_boxed_slice(),
                         })),
                         accessor: dae_parser::Accessor {
                             source: dae_parser::Url::Fragment("cube_pos_array".to_string()),
-                            count: 8,
+                            count: 3 * vertex_count,
                             offset: 0,
                             stride: 3,
                             param: vec![
@@ -195,15 +230,17 @@ fn make_geometry_library() -> dae_parser::LibraryElement {
                         asset: None,
                         array: Some(dae_parser::ArrayElement::Float(dae_parser::FloatArray {
                             id: Some("cube_normal_array".to_string()),
-                            val: vec![
-                                1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0,
-                                0.0, 1.0, 0.0, 0.0, -1.0,
-                            ]
-                            .into_boxed_slice(),
+                            val: mesh
+                                .normals
+                                .iter()
+                                .copied()
+                                .flatten()
+                                .collect::<Vec<f32>>()
+                                .into_boxed_slice(),
                         })),
                         accessor: dae_parser::Accessor {
                             source: dae_parser::Url::Fragment("cube_normal_array".to_string()),
-                            count: 6,
+                            count: 3 * vertex_count,
                             offset: 0,
                             stride: 3,
                             param: vec![
@@ -243,7 +280,7 @@ fn make_geometry_library() -> dae_parser::LibraryElement {
                 elements: vec![dae_parser::Primitive::PolyList(dae_parser::PolyList {
                     name: None,
                     material: None,
-                    count: 6,
+                    count: triangle_count,
                     inputs: dae_parser::InputList {
                         inputs: vec![
                             dae_parser::InputS {
@@ -266,12 +303,16 @@ fn make_geometry_library() -> dae_parser::LibraryElement {
                         depth: 2,
                     },
                     data: dae_parser::PolyListGeom {
-                        vcount: vec![4, 4, 4, 4, 4, 4].into_boxed_slice(),
-                        prim: vec![
-                            0, 4, 2, 4, 3, 4, 1, 4, 0, 2, 1, 2, 5, 2, 4, 2, 6, 3, 7, 3, 3, 3, 2, 3,
-                            0, 1, 4, 1, 6, 1, 2, 1, 3, 0, 7, 0, 5, 0, 1, 0, 5, 5, 7, 5, 6, 5, 4, 5,
-                        ]
-                        .into_boxed_slice(),
+                        vcount: std::iter::repeat(3)
+                            .take(triangle_count)
+                            .collect::<Vec<u32>>()
+                            .into_boxed_slice(),
+                        prim: (0..vertex_count as u32)
+                            .into_iter()
+                            .map(|i| [i, i])
+                            .flatten()
+                            .collect::<Vec<u32>>()
+                            .into_boxed_slice(),
                     },
                     extra: vec![],
                 })],
@@ -283,16 +324,19 @@ fn make_geometry_library() -> dae_parser::LibraryElement {
     })
 }
 
-fn make_controller_library() -> dae_parser::LibraryElement {
+fn make_controller_library(mesh: &CanonicalMesh) -> dae_parser::LibraryElement {
+    let weights: Vec<f32> = std::iter::repeat([0.0, 1.0])
+        .take(mesh.positions.len())
+        .flatten()
+        .collect();
+
     dae_parser::LibraryElement::Controllers(dae_parser::Library {
         asset: None,
         items: vec![make_controller(
             "cube_skin",
             "cube_geom",
             &["root_bone", "leaf_bone"],
-            &[
-                1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0,
-            ],
+            &weights,
         )],
         extra: vec![],
     })

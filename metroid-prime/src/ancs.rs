@@ -10,8 +10,8 @@ use pretty_hex::PrettyHex;
 
 #[derive(Clone, Debug)]
 pub struct Ancs {
-    character_set: CharacterSet,
-    animation_set: AnimationSet,
+    pub character_set: CharacterSet,
+    pub animation_set: AnimationSet,
 }
 
 impl ReadFrom for Ancs {
@@ -29,9 +29,9 @@ impl ReadFrom for Ancs {
 }
 
 #[derive(Clone, Debug)]
-struct CharacterSet {
-    version: u16,
-    characters: Vec<Character>,
+pub struct CharacterSet {
+    pub version: u16,
+    pub characters: Vec<Character>,
 }
 
 impl ReadFrom for CharacterSet {
@@ -51,21 +51,21 @@ impl ReadFrom for CharacterSet {
 }
 
 #[derive(Clone, Debug)]
-struct Character {
-    id: u32,
-    version: u16,
-    name: String,
-    model_id: u32,
-    skin_id: u32,
-    skeleton_id: u32,
-    animations: Vec<AnimationName>,
-    pas_database: PasDatabase,
-    particle_resource_data: ParticleResourceData,
-    animation_aabbs: Vec<AnimationAabb>,
-    effects: Vec<Effect>,
-    frozen_model_id: u32,
-    frozen_skin_id: u32,
-    animation_ids: Vec<u32>,
+pub struct Character {
+    pub id: u32,
+    pub version: u16,
+    pub name: String,
+    pub model_id: u32,
+    pub skin_id: u32,
+    pub skeleton_id: u32,
+    pub animations: Vec<AnimationName>,
+    pub pas_database: PasDatabase,
+    pub particle_resource_data: ParticleResourceData,
+    pub animation_aabbs: Vec<AnimationAabb>,
+    pub effects: Vec<Effect>,
+    pub frozen_model_id: u32,
+    pub frozen_skin_id: u32,
+    pub animation_ids: Vec<u32>,
 }
 
 impl ReadFrom for Character {
@@ -148,13 +148,13 @@ impl ReadFrom for Character {
 }
 
 #[derive(Clone, Debug)]
-struct AnimationName {
-    id: u32,
-    name: String,
+pub struct AnimationName {
+    pub id: u32,
+    pub name: String,
 }
 
-struct AnimationContext {
-    version: u16,
+pub struct AnimationContext {
+    pub version: u16,
 }
 
 impl ReadFromWithContext for AnimationName {
@@ -171,9 +171,9 @@ impl ReadFromWithContext for AnimationName {
 }
 
 #[derive(Clone, Debug)]
-struct PasDatabase {
-    default_anim_state: u32,
-    anim_states: Vec<AnimState>,
+pub struct PasDatabase {
+    pub default_anim_state: u32,
+    pub anim_states: Vec<AnimState>,
 }
 
 impl ReadFrom for PasDatabase {
@@ -194,10 +194,10 @@ impl ReadFrom for PasDatabase {
 }
 
 #[derive(Clone, Debug)]
-struct AnimState {
-    kind: u32,
-    parm_infos: Vec<ParmInfo>,
-    anim_infos: Vec<AnimInfo>,
+pub struct AnimState {
+    pub kind: u32,
+    pub parm_infos: Vec<ParmInfo>,
+    pub anim_infos: Vec<AnimInfo>,
 }
 
 impl ReadFrom for AnimState {
@@ -227,12 +227,12 @@ impl ReadFrom for AnimState {
 }
 
 #[derive(Clone, Debug)]
-struct ParmInfo {
-    kind: ParmKind,
-    function: u32,
-    weight: f32,
-    min: ParmValue,
-    max: ParmValue,
+pub struct ParmInfo {
+    pub kind: ParmKind,
+    pub function: u32,
+    pub weight: f32,
+    pub min: ParmValue,
+    pub max: ParmValue,
 }
 
 impl ReadFrom for ParmInfo {
@@ -253,7 +253,7 @@ impl ReadFrom for ParmInfo {
 }
 
 #[derive(Clone, Copy, Debug)]
-enum ParmKind {
+pub enum ParmKind {
     I32,
     U32,
     F32,
@@ -275,7 +275,7 @@ impl ReadFrom for ParmKind {
 }
 
 #[derive(Clone, Debug)]
-enum ParmValue {
+pub enum ParmValue {
     I32(i32),
     U32(u32),
     F32(f32),
@@ -298,13 +298,13 @@ impl ReadFromWithContext for ParmValue {
 }
 
 #[derive(Clone, Debug)]
-struct AnimInfo {
-    id: u32,
-    parm_values: Vec<ParmValue>,
+pub struct AnimInfo {
+    pub id: u32,
+    pub parm_values: Vec<ParmValue>,
 }
 
-struct AnimInfoContext {
-    parm_infos: Vec<ParmInfo>,
+pub struct AnimInfoContext {
+    pub parm_infos: Vec<ParmInfo>,
 }
 
 impl ReadFromWithContext for AnimInfo {
@@ -321,14 +321,14 @@ impl ReadFromWithContext for AnimInfo {
 }
 
 #[derive(Clone, Debug)]
-struct ParticleResourceData {
-    generic_particle_ids: Vec<u32>,
-    swoosh_particle_ids: Vec<u32>,
-    electric_particle_ids: Vec<u32>,
+pub struct ParticleResourceData {
+    pub generic_particle_ids: Vec<u32>,
+    pub swoosh_particle_ids: Vec<u32>,
+    pub electric_particle_ids: Vec<u32>,
 }
 
-struct ParticleResourceDataContext {
-    version: u16,
+pub struct ParticleResourceDataContext {
+    pub version: u16,
 }
 
 impl ReadFromWithContext for ParticleResourceData {
@@ -373,14 +373,14 @@ impl ReadFromWithContext for ParticleResourceData {
 }
 
 #[derive(Clone, Debug)]
-struct AnimationAabb {
-    name: String,
-    min_x: f32,
-    min_y: f32,
-    min_z: f32,
-    max_x: f32,
-    max_y: f32,
-    max_z: f32,
+pub struct AnimationAabb {
+    pub name: String,
+    pub min_x: f32,
+    pub min_y: f32,
+    pub min_z: f32,
+    pub max_x: f32,
+    pub max_y: f32,
+    pub max_z: f32,
 }
 
 impl ReadFrom for AnimationAabb {
@@ -405,9 +405,9 @@ impl ReadFrom for AnimationAabb {
 }
 
 #[derive(Clone, Debug)]
-struct Effect {
-    name: String,
-    components: Vec<EffectComponent>,
+pub struct Effect {
+    pub name: String,
+    pub components: Vec<EffectComponent>,
 }
 
 impl ReadFrom for Effect {
@@ -423,14 +423,14 @@ impl ReadFrom for Effect {
 }
 
 #[derive(Clone, Debug)]
-struct EffectComponent {
-    name: String,
-    particle_asset_type: String,
-    particle_asset_id: u32,
-    bone_name: String,
-    scale: f32,
-    parented: u32,
-    flags: u32,
+pub struct EffectComponent {
+    pub name: String,
+    pub particle_asset_type: String,
+    pub particle_asset_id: u32,
+    pub bone_name: String,
+    pub scale: f32,
+    pub parented: u32,
+    pub flags: u32,
 }
 
 impl ReadFrom for EffectComponent {
@@ -455,16 +455,16 @@ impl ReadFrom for EffectComponent {
 }
 
 #[derive(Clone, Debug)]
-struct AnimationSet {
-    version: u16,
-    animations: Vec<Animation>,
-    transitions: Vec<Transition>,
-    default_transition: MetaTransition,
-    additive_animations: Vec<AdditiveAnimation>,
-    default_additive_fade_in_time: Option<f32>,
-    default_additive_fade_out_time: Option<f32>,
-    half_transitions: Vec<HalfTransition>,
-    animation_resources: Vec<AnimationResource>,
+pub struct AnimationSet {
+    pub version: u16,
+    pub animations: Vec<Animation>,
+    pub transitions: Vec<Transition>,
+    pub default_transition: MetaTransition,
+    pub additive_animations: Vec<AdditiveAnimation>,
+    pub default_additive_fade_in_time: Option<f32>,
+    pub default_additive_fade_out_time: Option<f32>,
+    pub half_transitions: Vec<HalfTransition>,
+    pub animation_resources: Vec<AnimationResource>,
 }
 
 impl ReadFrom for AnimationSet {
@@ -564,9 +564,9 @@ impl ReadFrom for AnimationSet {
 }
 
 #[derive(Clone, Debug)]
-struct Animation {
-    name: String,
-    meta_animation: MetaAnimation,
+pub struct Animation {
+    pub name: String,
+    pub meta_animation: MetaAnimation,
 }
 
 impl ReadFrom for Animation {
@@ -581,7 +581,7 @@ impl ReadFrom for Animation {
 }
 
 #[derive(Clone, Debug)]
-enum MetaAnimation {
+pub enum MetaAnimation {
     Play {
         animation_id: u32,
         primitive_id: u32,
@@ -632,9 +632,9 @@ impl ReadFrom for MetaAnimation {
 }
 
 #[derive(Clone, Debug)]
-struct CharAnimTime {
-    time: f32,
-    differential_state: u32,
+pub struct CharAnimTime {
+    pub time: f32,
+    pub differential_state: u32,
 }
 
 impl ReadFrom for CharAnimTime {
@@ -649,11 +649,11 @@ impl ReadFrom for CharAnimTime {
 }
 
 #[derive(Clone, Debug)]
-struct Transition {
-    unknown: u32,
-    animation_id_a: u32,
-    animation_id_b: u32,
-    meta_transition: MetaTransition,
+pub struct Transition {
+    pub unknown: u32,
+    pub animation_id_a: u32,
+    pub animation_id_b: u32,
+    pub meta_transition: MetaTransition,
 }
 
 impl ReadFrom for Transition {
@@ -672,7 +672,7 @@ impl ReadFrom for Transition {
 }
 
 #[derive(Clone, Debug)]
-enum MetaTransition {
+pub enum MetaTransition {
     Animation(MetaAnimation),
     Transition {
         unknown1: f32,
@@ -734,10 +734,10 @@ impl ReadFrom for MetaTransition {
 }
 
 #[derive(Clone, Debug)]
-struct AdditiveAnimation {
-    animation_id: u32,
-    fade_in_time: f32,
-    fade_out_time: f32,
+pub struct AdditiveAnimation {
+    pub animation_id: u32,
+    pub fade_in_time: f32,
+    pub fade_out_time: f32,
 }
 
 impl ReadFrom for AdditiveAnimation {
@@ -754,9 +754,9 @@ impl ReadFrom for AdditiveAnimation {
 }
 
 #[derive(Clone, Debug)]
-struct HalfTransition {
-    animation_id: u32,
-    meta_transition: MetaTransition,
+pub struct HalfTransition {
+    pub animation_id: u32,
+    pub meta_transition: MetaTransition,
 }
 
 impl ReadFrom for HalfTransition {
@@ -771,9 +771,9 @@ impl ReadFrom for HalfTransition {
 }
 
 #[derive(Clone, Debug)]
-struct AnimationResource {
-    animation_id: u32,
-    event_id: u32,
+pub struct AnimationResource {
+    pub animation_id: u32,
+    pub event_id: u32,
 }
 
 impl ReadFrom for AnimationResource {
