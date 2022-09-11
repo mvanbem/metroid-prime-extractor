@@ -3,15 +3,17 @@
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{BufWriter, Write};
-use std::os::unix::prelude::AsRawFd;
 use std::path::PathBuf;
-use std::slice::from_raw_parts;
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
+use byteorder::{LittleEndian, WriteBytesExt};
+use clap::Parser;
 use gamecube::bytes::ReadFrom;
 use gamecube::disc::Header;
 use gamecube::{Disc, ReadTypedExt};
-use mmap::{MapOption, MemoryMap};
+use gltf::Gltf;
+use memmap::Mmap;
+use nalgebra::Vector3;
 
 use crate::ancs::Ancs;
 use crate::cmdl::Cmdl;
@@ -25,18 +27,20 @@ mod mesh;
 mod pak;
 mod txtr;
 
+#[derive(Parser)]
+struct Args {
+    /// Path to a Metroid Prime disc image, USA version 1.0.
+    image_path: String,
+}
+
 fn main() -> Result<()> {
-    let disc_file = File::open("/home/mvanbem/Metroid Prime (USA) (v1.00).iso")?;
-    let disc_mmap = MemoryMap::new(
-        gamecube::disc::SIZE as usize,
-        &[
-            MapOption::MapFd(disc_file.as_raw_fd()),
-            MapOption::MapReadable,
-        ],
-    )?;
+    let args = Args::parse();
+
+    let disc_file = File::open(&args.image_path)?;
+    let disc_mmap = unsafe { Mmap::map(&disc_file) }?;
     assert_eq!(disc_mmap.len(), gamecube::disc::SIZE as usize);
-    let disc_data = unsafe { from_raw_parts(disc_mmap.data(), disc_mmap.len()) };
-    let disc = Disc::new(disc_data)?;
+
+    let disc = Disc::new(&*disc_mmap)?;
     verify_disc(disc.header())?;
 
     let pak = Pak::new(
@@ -63,7 +67,8 @@ fn main() -> Result<()> {
             .as_slice()
             .read_typed()?;
         let mesh = CanonicalMesh::new(&pak, &wave_model_cmdl, 0)?;
-        export_collada(&mesh)?;
+        // export_collada(&mesh)?;
+        export_gltf(&pak, &mesh)?;
     }
 
     Ok(())
@@ -134,493 +139,215 @@ fn process_all_resources(disc: &Disc) -> Result<()> {
     Ok(())
 }
 
-fn export_collada(mesh: &CanonicalMesh) -> Result<()> {
-    // Emit a test COLLADA file.
-    let mut file = BufWriter::new(File::create("collada_export.dae")?);
-    let now = chrono::Local::now();
-    dae_parser::Document {
-        asset: dae_parser::Asset {
-            contributor: vec![],
-            created: now.to_rfc3339(),
-            keywords: vec![],
-            modified: now.to_rfc3339(),
-            revision: None,
-            subject: None,
-            title: None,
-            unit: dae_parser::Unit {
-                name: None,
-                meter: 1.0,
-            },
-            up_axis: dae_parser::UpAxis::YUp,
-        },
-        library: vec![
-            make_geometry_library(mesh),
-            make_controller_library(mesh),
-            make_visual_scene_library(),
-        ],
-        scene: Some(make_scene()),
-        extra: vec![],
-    }
-    .write_to(&mut file)
-    .unwrap();
+fn export_gltf(pak: &Pak, mesh: &CanonicalMesh) -> Result<()> {
+    let mut file = BufWriter::new(File::create("gltf_export.gltf")?);
+    make_gltf_document(pak, mesh)?.to_writer_pretty(&mut file)?;
     file.flush()?;
 
     Ok(())
 }
 
-fn make_geometry_library(mesh: &CanonicalMesh) -> dae_parser::LibraryElement {
-    assert_eq!(mesh.positions.len(), mesh.normals.len());
-    assert_eq!(mesh.positions.len() % 3, 0);
-    let triangle_count = mesh.positions.len() / 3;
-    let vertex_count = mesh.positions.len();
-    dae_parser::LibraryElement::Geometries(dae_parser::Library {
-        asset: None,
-        items: vec![dae_parser::Geometry {
-            id: Some("cube_geom".to_string()),
-            name: Some("cube_geom".to_string()),
-            asset: None,
-            element: dae_parser::GeometryElement::Mesh(dae_parser::Mesh {
-                convex: false,
-                sources: vec![
-                    dae_parser::Source {
-                        id: Some("cube_pos".to_string()),
-                        name: None,
-                        asset: None,
-                        array: Some(dae_parser::ArrayElement::Float(dae_parser::FloatArray {
-                            id: Some("cube_pos_array".to_string()),
-                            val: mesh
-                                .positions
-                                .iter()
-                                .copied()
-                                .flatten()
-                                .collect::<Vec<f32>>()
-                                .into_boxed_slice(),
-                        })),
-                        accessor: dae_parser::Accessor {
-                            source: dae_parser::Url::Fragment("cube_pos_array".to_string()),
-                            count: 3 * vertex_count,
-                            offset: 0,
-                            stride: 3,
-                            param: vec![
-                                dae_parser::Param {
-                                    sid: None,
-                                    name: Some("X".to_string()),
-                                    ty: "float".to_string(),
-                                    semantic: None,
-                                },
-                                dae_parser::Param {
-                                    sid: None,
-                                    name: Some("Y".to_string()),
-                                    ty: "float".to_string(),
-                                    semantic: None,
-                                },
-                                dae_parser::Param {
-                                    sid: None,
-                                    name: Some("Z".to_string()),
-                                    ty: "float".to_string(),
-                                    semantic: None,
-                                },
-                            ],
-                        },
-                        technique: vec![],
-                    },
-                    dae_parser::Source {
-                        id: Some("cube_normal".to_string()),
-                        name: None,
-                        asset: None,
-                        array: Some(dae_parser::ArrayElement::Float(dae_parser::FloatArray {
-                            id: Some("cube_normal_array".to_string()),
-                            val: mesh
-                                .normals
-                                .iter()
-                                .copied()
-                                .flatten()
-                                .collect::<Vec<f32>>()
-                                .into_boxed_slice(),
-                        })),
-                        accessor: dae_parser::Accessor {
-                            source: dae_parser::Url::Fragment("cube_normal_array".to_string()),
-                            count: 3 * vertex_count,
-                            offset: 0,
-                            stride: 3,
-                            param: vec![
-                                dae_parser::Param {
-                                    sid: None,
-                                    name: Some("X".to_string()),
-                                    ty: "float".to_string(),
-                                    semantic: None,
-                                },
-                                dae_parser::Param {
-                                    sid: None,
-                                    name: Some("Y".to_string()),
-                                    ty: "float".to_string(),
-                                    semantic: None,
-                                },
-                                dae_parser::Param {
-                                    sid: None,
-                                    name: Some("Z".to_string()),
-                                    ty: "float".to_string(),
-                                    semantic: None,
-                                },
-                            ],
-                        },
-                        technique: vec![],
-                    },
-                ],
-                vertices: Some(dae_parser::Vertices {
-                    id: "cube_vtx".to_string(),
-                    name: None,
-                    inputs: vec![dae_parser::Input {
-                        semantic: dae_parser::Semantic::Position,
-                        source: dae_parser::Url::Fragment("cube_pos".to_string()),
-                    }],
-                    position: 0,
-                    extra: vec![],
+fn make_gltf_document(pak: &Pak, mesh: &CanonicalMesh) -> Result<Gltf> {
+    const ATTRIBUTE_STRIDE: usize = 32;
+    const POSITION_OFFSET: usize = 0;
+    const NORMAL_OFFSET: usize = 12;
+    const TEXCOORD0_OFFSET: usize = 24;
+
+    // Export all referenced textures and build glTF materials that refer to them.
+    let mut images = Vec::new();
+    let mut textures = Vec::new();
+    let mut materials = Vec::new();
+    for (index, texture_id) in mesh.texture_ids.iter().copied().enumerate() {
+        let filename = format!("gltf_export_{index:02}.png");
+
+        // Export the texture to a file.
+        let texture_data = pak
+            .data(texture_id)?
+            .ok_or_else(|| anyhow!("Texture 0x{texture_id:08x} not found"))?;
+        let mut file = BufWriter::new(File::create(&filename)?);
+        txtr::dump(&texture_data, &mut file)?;
+        file.flush()?;
+        drop(file);
+
+        images.push(gltf::Image {
+            uri: Some(filename),
+            mime_type: None,
+            buffer_view: None,
+        });
+
+        textures.push(gltf::Texture {
+            sampler: Some(gltf::SamplerIndex(0)),
+            source: Some(gltf::ImageIndex(index)),
+        });
+
+        materials.push(gltf::Material {
+            pbr_metallic_roughness: Some(gltf::PbrMetallicRoughness {
+                base_color_factor: None,
+                base_color_texture: Some(gltf::TextureInfo {
+                    index: gltf::TextureIndex(index),
+                    tex_coord: Some(0),
                 }),
-                elements: vec![dae_parser::Primitive::PolyList(dae_parser::PolyList {
-                    name: None,
-                    material: None,
-                    count: triangle_count,
-                    inputs: dae_parser::InputList {
-                        inputs: vec![
-                            dae_parser::InputS {
-                                input: dae_parser::Input {
-                                    semantic: dae_parser::Semantic::Vertex,
-                                    source: dae_parser::Url::Fragment("cube_vtx".to_string()),
-                                },
-                                offset: 0,
-                                set: None,
-                            },
-                            dae_parser::InputS {
-                                input: dae_parser::Input {
-                                    semantic: dae_parser::Semantic::Normal,
-                                    source: dae_parser::Url::Fragment("cube_normal".to_string()),
-                                },
-                                offset: 1,
-                                set: None,
-                            },
-                        ],
-                        depth: 2,
-                    },
-                    data: dae_parser::PolyListGeom {
-                        vcount: std::iter::repeat(3)
-                            .take(triangle_count)
-                            .collect::<Vec<u32>>()
-                            .into_boxed_slice(),
-                        prim: (0..vertex_count as u32)
-                            .into_iter()
-                            .map(|i| [i, i])
-                            .flatten()
-                            .collect::<Vec<u32>>()
-                            .into_boxed_slice(),
-                    },
-                    extra: vec![],
-                })],
-                extra: vec![],
+                metallic_factor: Some(1.0),
+                roughness_factor: Some(0.25),
+                metallic_roughness_texture: None,
             }),
-            extra: vec![],
-        }],
-        extra: vec![],
-    })
-}
-
-fn make_controller_library(mesh: &CanonicalMesh) -> dae_parser::LibraryElement {
-    let weights: Vec<f32> = std::iter::repeat([0.0, 1.0])
-        .take(mesh.positions.len())
-        .flatten()
-        .collect();
-
-    dae_parser::LibraryElement::Controllers(dae_parser::Library {
-        asset: None,
-        items: vec![make_controller(
-            "cube_skin",
-            "cube_geom",
-            &["root_bone", "leaf_bone"],
-            &weights,
-        )],
-        extra: vec![],
-    })
-}
-
-fn make_controller(
-    base_name: &str,
-    skin_source_fragment: &str,
-    bone_names: &[&str],
-    weights: &[f32],
-) -> dae_parser::Controller {
-    let joints_id = format!("{}_joints", base_name);
-    let joints_array_id = format!("{}_joints_array", base_name);
-    let bind_poses_id = format!("{}_bind_poses", base_name);
-    let bind_poses_array_id = format!("{}_bind_poses_array", base_name);
-    let weights_id = format!("{}_weights", base_name);
-    let weights_array_id = format!("{}_weights_array", base_name);
-
-    dae_parser::Controller {
-        id: Some(base_name.to_string()),
-        name: Some("armature".to_string()),
-        asset: None,
-        element: dae_parser::ControlElement::Skin(dae_parser::Skin {
-            source: dae_parser::UrlRef::new(dae_parser::Url::Fragment(
-                skin_source_fragment.to_string(),
-            )),
-            bind_shape_matrix: Some(Box::new([
-                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-            ])),
-            sources: vec![
-                dae_parser::Source {
-                    id: Some(joints_id.clone()),
-                    name: None,
-                    asset: None,
-                    array: Some(dae_parser::ArrayElement::Name(dae_parser::NameArray {
-                        id: Some(joints_array_id.clone()),
-                        val: bone_names
-                            .iter()
-                            .map(|name| name.to_string())
-                            .collect::<Vec<String>>()
-                            .into_boxed_slice(),
-                    })),
-                    accessor: dae_parser::Accessor {
-                        source: dae_parser::Url::Fragment(joints_array_id),
-                        count: 1,
-                        offset: 0,
-                        stride: 1,
-                        param: vec![dae_parser::Param {
-                            sid: None,
-                            name: Some("JOINT".to_string()),
-                            ty: "name".to_string(),
-                            semantic: None,
-                        }],
-                    },
-                    technique: vec![],
-                },
-                dae_parser::Source {
-                    id: Some(bind_poses_id.clone()),
-                    name: None,
-                    asset: None,
-                    array: Some(dae_parser::ArrayElement::Float(dae_parser::FloatArray {
-                        id: Some(bind_poses_array_id.clone()),
-                        val: std::iter::repeat([
-                            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
-                            0.0, 1.0,
-                        ])
-                        .take(bone_names.len())
-                        .flatten()
-                        .collect::<Vec<f32>>()
-                        .into_boxed_slice(),
-                    })),
-                    accessor: dae_parser::Accessor {
-                        source: dae_parser::Url::Fragment(bind_poses_array_id),
-                        count: 1,
-                        offset: 0,
-                        stride: 16,
-                        param: vec![dae_parser::Param {
-                            sid: None,
-                            name: Some("TRANSFORM".to_string()),
-                            ty: "float4x4".to_string(),
-                            semantic: None,
-                        }],
-                    },
-                    technique: vec![],
-                },
-                dae_parser::Source {
-                    id: Some(weights_id.clone()),
-                    name: None,
-                    asset: None,
-                    array: Some(dae_parser::ArrayElement::Float(dae_parser::FloatArray {
-                        id: Some(weights_array_id.clone()),
-                        val: weights.to_vec().into_boxed_slice(),
-                    })),
-                    accessor: dae_parser::Accessor {
-                        source: dae_parser::Url::Fragment(weights_array_id),
-                        count: weights.len(),
-                        offset: 0,
-                        stride: 1,
-                        param: vec![dae_parser::Param {
-                            sid: None,
-                            name: Some("WEIGHT".to_string()),
-                            ty: "float".to_string(),
-                            semantic: None,
-                        }],
-                    },
-                    technique: vec![],
-                },
-            ],
-            joints: dae_parser::Joints {
-                inputs: vec![
-                    dae_parser::Input {
-                        semantic: dae_parser::Semantic::Joint,
-                        source: dae_parser::Url::Fragment(joints_id.clone()),
-                    },
-                    dae_parser::Input {
-                        semantic: dae_parser::Semantic::InvBindMatrix,
-                        source: dae_parser::Url::Fragment(bind_poses_id),
-                    },
-                ],
-                joint: 0,
-                extra: vec![],
-            },
-            weights: dae_parser::VertexWeights {
-                count: weights.len(),
-                inputs: dae_parser::InputList {
-                    inputs: vec![
-                        dae_parser::InputS {
-                            input: dae_parser::Input {
-                                semantic: dae_parser::Semantic::Joint,
-                                source: dae_parser::Url::Fragment(joints_id),
-                            },
-                            offset: 0,
-                            set: None,
-                        },
-                        dae_parser::InputS {
-                            input: dae_parser::Input {
-                                semantic: dae_parser::Semantic::Weight,
-                                source: dae_parser::Url::Fragment(weights_id),
-                            },
-                            offset: 1,
-                            set: None,
-                        },
-                    ],
-                    depth: 2,
-                },
-                joint: 0,
-                vcount: std::iter::repeat(bone_names.len() as u32)
-                    .take(weights.len() / bone_names.len())
-                    .collect::<Vec<u32>>()
-                    .into_boxed_slice(),
-                prim: (0..weights.len())
-                    .into_iter()
-                    .map(|weight_index| {
-                        let bone_index = weight_index as usize % bone_names.len();
-                        [bone_index as i32, weight_index as i32]
-                    })
-                    .flatten()
-                    .collect::<Vec<i32>>()
-                    .into_boxed_slice(),
-                extra: vec![],
-            },
-            extra: vec![],
-        }),
-        extra: vec![],
+        });
     }
-}
 
-fn make_visual_scene_library() -> dae_parser::LibraryElement {
-    dae_parser::LibraryElement::VisualScenes(dae_parser::Library {
-        asset: None,
-        items: vec![dae_parser::VisualScene {
-            id: Some("DefaultScene".to_string()),
-            name: None,
-            asset: None,
-            nodes: vec![
-                dae_parser::Node {
-                    id: Some("armature".to_string()),
-                    name: Some("armature".to_string()),
-                    sid: None,
-                    ty: dae_parser::NodeType::Node,
-                    layer: vec![],
-                    asset: None,
-                    transforms: vec![dae_parser::Transform::Translate(dae_parser::Translate(
-                        Box::new([0.0, 0.0, 0.0]),
-                    ))],
-                    instance_camera: vec![],
-                    instance_controller: vec![],
-                    instance_geometry: vec![],
-                    instance_light: vec![],
-                    instance_node: vec![],
-                    children: vec![dae_parser::Node {
-                        id: None,
-                        name: Some("root bone".to_string()),
-                        sid: Some("root_bone".to_string()),
-                        ty: dae_parser::NodeType::Joint,
-                        layer: vec![],
-                        asset: None,
-                        transforms: vec![dae_parser::Transform::Translate(dae_parser::Translate(
-                            Box::new([0.0, 0.0, 0.0]),
-                        ))],
-                        instance_camera: vec![],
-                        instance_controller: vec![],
-                        instance_geometry: vec![],
-                        instance_light: vec![],
-                        instance_node: vec![],
-                        children: vec![dae_parser::Node {
-                            id: None,
-                            name: Some("leaf bone".to_string()),
-                            sid: Some("leaf_bone".to_string()),
-                            ty: dae_parser::NodeType::Joint,
-                            layer: vec![],
-                            asset: None,
-                            transforms: vec![dae_parser::Transform::Translate(
-                                dae_parser::Translate(Box::new([0.0, 2.0, 0.0])),
-                            )],
-                            instance_camera: vec![],
-                            instance_controller: vec![],
-                            instance_geometry: vec![],
-                            instance_light: vec![],
-                            instance_node: vec![],
-                            children: vec![],
-                            extra: vec![],
-                        }],
-                        extra: vec![],
-                    }],
-                    extra: vec![],
-                },
-                make_cube_node("cube", "cube", "cube_skin", "armature", [0.0, 0.0, 0.0]),
-            ],
-            evaluate_scene: vec![],
-            extra: vec![],
+    // Process all surfaces into index and attribute buffers, generating glTF accessors and mesh
+    // primitives that refer to them.
+    let mut index_buffer = vec![];
+    let mut attribute_buffer = vec![];
+    let mut accessors = Vec::new();
+    let mut mesh_primitives = Vec::new();
+    for surface in &mesh.surfaces {
+        assert_eq!(surface.positions.len(), surface.normals.len());
+        assert_eq!(surface.positions.len(), surface.texcoords.len());
+
+        let first_texture_index = surface.texture_indices[0];
+
+        let index_byte_offset = index_buffer.len();
+        let attribute_byte_offset = attribute_buffer.len();
+
+        let mut count = 0;
+        let mut min_position = Vector3::repeat(f32::INFINITY);
+        let mut max_position = Vector3::repeat(f32::NEG_INFINITY);
+        for ((position, normal), texcoord) in surface
+            .positions
+            .iter()
+            .zip(surface.normals.iter())
+            .zip(surface.texcoords.iter())
+        {
+            index_buffer.write_u16::<LittleEndian>(count as u16)?;
+            attribute_buffer.write_f32::<LittleEndian>(position[0])?;
+            attribute_buffer.write_f32::<LittleEndian>(position[1])?;
+            attribute_buffer.write_f32::<LittleEndian>(position[2])?;
+            attribute_buffer.write_f32::<LittleEndian>(normal[0])?;
+            attribute_buffer.write_f32::<LittleEndian>(normal[1])?;
+            attribute_buffer.write_f32::<LittleEndian>(normal[2])?;
+            attribute_buffer.write_f32::<LittleEndian>(texcoord[0])?;
+            attribute_buffer.write_f32::<LittleEndian>(texcoord[1])?;
+            count += 1;
+            min_position = min_position.inf(&(*position).into());
+            max_position = max_position.sup(&(*position).into());
+        }
+
+        let accessor_base_index = accessors.len();
+        accessors.push(gltf::Accessor {
+            buffer_view: Some(gltf::BufferViewIndex(0)),
+            byte_offset: index_byte_offset,
+            type_: gltf::AccessorType::Scalar,
+            component_type: gltf::AccessorComponentType::UnsignedShort,
+            count,
+            min: None,
+            max: None,
+        });
+        accessors.push(gltf::Accessor {
+            buffer_view: Some(gltf::BufferViewIndex(1)),
+            byte_offset: attribute_byte_offset + POSITION_OFFSET,
+            type_: gltf::AccessorType::Vec3,
+            component_type: gltf::AccessorComponentType::Float,
+            count,
+            min: Some(min_position.iter().copied().collect()),
+            max: Some(max_position.iter().copied().collect()),
+        });
+        accessors.push(gltf::Accessor {
+            buffer_view: Some(gltf::BufferViewIndex(1)),
+            byte_offset: attribute_byte_offset + NORMAL_OFFSET,
+            type_: gltf::AccessorType::Vec3,
+            component_type: gltf::AccessorComponentType::Float,
+            count,
+            min: None,
+            max: None,
+        });
+        accessors.push(gltf::Accessor {
+            buffer_view: Some(gltf::BufferViewIndex(1)),
+            byte_offset: attribute_byte_offset + TEXCOORD0_OFFSET,
+            type_: gltf::AccessorType::Vec2,
+            component_type: gltf::AccessorComponentType::Float,
+            count,
+            min: None,
+            max: None,
+        });
+
+        mesh_primitives.push(gltf::MeshPrimitive {
+            mode: gltf::MeshPrimitiveMode::Triangles,
+            indices: gltf::AccessorIndex(accessor_base_index + 0),
+            attributes: [
+                (
+                    gltf::MeshAttribute::Position,
+                    gltf::AccessorIndex(accessor_base_index + 1),
+                ),
+                (
+                    gltf::MeshAttribute::Normal,
+                    gltf::AccessorIndex(accessor_base_index + 2),
+                ),
+                (
+                    gltf::MeshAttribute::Texcoord(0),
+                    gltf::AccessorIndex(accessor_base_index + 3),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+            material: Some(gltf::MaterialIndex(first_texture_index)),
+        });
+    }
+
+    // Write out the index and attribute buffers to a single externally referenced file.
+    let mut buffer_file = BufWriter::new(File::create("gltf_export.bin")?);
+    buffer_file.write_all(&index_buffer)?;
+    buffer_file.write_all(&attribute_buffer)?;
+    buffer_file.flush()?;
+    drop(buffer_file);
+
+    // Build the rest of the glTF file.
+    Ok(Gltf {
+        accessors,
+        asset: gltf::Asset {
+            version: gltf::Version,
+        },
+        buffers: vec![gltf::Buffer {
+            byte_length: index_buffer.len() + attribute_buffer.len(),
+            uri: "gltf_export.bin".to_string(),
         }],
-        extra: vec![],
-    })
-}
-
-fn make_cube_node(
-    id: &str,
-    name: &str,
-    controller_id: &str,
-    root_bone_id: &str,
-    translation: [f32; 3],
-) -> dae_parser::Node {
-    dae_parser::Node {
-        id: Some(id.to_string()),
-        name: Some(name.to_string()),
-        sid: None,
-        ty: dae_parser::NodeType::Node,
-        layer: vec![],
-        asset: None,
-        transforms: vec![dae_parser::Transform::Translate(dae_parser::Translate(
-            Box::new(translation),
-        ))],
-        instance_camera: vec![],
-        instance_controller: vec![dae_parser::Instance {
-            sid: None,
-            url: dae_parser::UrlRef::new(dae_parser::Url::Fragment(controller_id.to_string())),
-            name: None,
-            data: dae_parser::InstanceControllerData {
-                skeleton: vec![dae_parser::Url::Fragment(root_bone_id.to_string())],
-                bind_material: None,
+        buffer_views: vec![
+            gltf::BufferView {
+                buffer: gltf::BufferIndex(0),
+                byte_offset: 0,
+                byte_length: index_buffer.len(),
+                byte_stride: None,
             },
-            extra: vec![],
+            gltf::BufferView {
+                buffer: gltf::BufferIndex(0),
+                byte_offset: index_buffer.len(),
+                byte_length: attribute_buffer.len(),
+                byte_stride: Some(ATTRIBUTE_STRIDE),
+            },
+        ],
+        images,
+        materials,
+        meshes: vec![gltf::Mesh {
+            primitives: mesh_primitives,
         }],
-        instance_geometry: vec![],
-        instance_light: vec![],
-        instance_node: vec![],
-        children: vec![],
-        extra: vec![],
-    }
-}
-
-fn make_scene() -> dae_parser::Scene {
-    dae_parser::Scene {
-        instance_physics_scene: vec![],
-        instance_visual_scene: Some(dae_parser::Instance {
-            sid: None,
-            url: dae_parser::UrlRef::new(dae_parser::Url::Fragment("DefaultScene".to_string())),
-            name: None,
-            data: (),
-            extra: vec![],
-        }),
-        extra: vec![],
-    }
+        nodes: vec![gltf::Node {
+            name: "object".to_string(),
+            mesh: Some(gltf::MeshIndex(0)),
+            ..Default::default()
+        }],
+        samplers: vec![gltf::Sampler {
+            mag_filter: gltf::SamplerMagFilter::Linear,
+            min_filter: gltf::SamplerMinFilter::LinearMipmapLinear,
+            wrap_s: gltf::SamplerWrap::Repeat,
+            wrap_t: gltf::SamplerWrap::Repeat,
+        }],
+        scene: Some(gltf::SceneIndex(0)),
+        scenes: vec![gltf::Scene {
+            name: "scene".to_string(),
+            nodes: vec![gltf::NodeIndex(0)],
+            ..Default::default()
+        }],
+        textures,
+    })
 }
 
 fn verify_disc(header: &Header) -> Result<()> {

@@ -74,7 +74,7 @@ fn dump_i4<W: Write>(
 ) -> Result<()> {
     let mut decoded = Vec::with_capacity(width * height * 4);
     let blocks_wide = (width + 7) / 8;
-    for y in 0..height {
+    for y in (0..height).rev() {
         let y = height - y - 1;
         let coarse_y = y / 8;
         let fine_y = y % 8;
@@ -106,7 +106,7 @@ fn dump_i8<W: Write>(
 ) -> Result<()> {
     let mut decoded = Vec::with_capacity(width * height * 4);
     let blocks_wide = (width + 7) / 8;
-    for y in 0..height {
+    for y in (0..height).rev() {
         let y = height - y - 1;
         let coarse_y = y / 4;
         let fine_y = y % 4;
@@ -136,7 +136,7 @@ fn dump_ia4<W: Write>(
 ) -> Result<()> {
     let mut decoded = Vec::with_capacity(width * height * 4);
     let blocks_wide = (width + 7) / 8;
-    for y in 0..height {
+    for y in (0..height).rev() {
         let y = height - y - 1;
         let coarse_y = y / 4;
         let fine_y = y % 4;
@@ -170,7 +170,7 @@ fn dump_ia8<W: Write>(
 ) -> Result<()> {
     let mut decoded = Vec::with_capacity(width * height * 4);
     let blocks_wide = (width + 3) / 4;
-    for y in 0..height {
+    for y in (0..height).rev() {
         let y = height - y - 1;
         let coarse_y = y / 4;
         let fine_y = y % 4;
@@ -207,7 +207,7 @@ fn dump_c4<W: Write>(
 
     let mut decoded = Vec::with_capacity(width * height * 4);
     let blocks_wide = (width + 7) / 8;
-    for y in 0..height {
+    for y in (0..height).rev() {
         let y = height - y - 1;
         let coarse_y = y / 8;
         let fine_y = y % 8;
@@ -244,7 +244,7 @@ fn dump_c8<W: Write>(
 
     let mut decoded = Vec::with_capacity(width * height * 4);
     let blocks_wide = (width + 7) / 8;
-    for y in 0..height {
+    for y in (0..height).rev() {
         let y = height - y - 1;
         let coarse_y = y / 4;
         let fine_y = y % 4;
@@ -274,7 +274,7 @@ fn dump_rgb565<W: Write>(
 ) -> Result<()> {
     let mut decoded = Vec::with_capacity(width * height * 4);
     let blocks_wide = (width + 3) / 4;
-    for y in 0..height {
+    for y in (0..height).rev() {
         let y = height - y - 1;
         let coarse_y = y / 4;
         let fine_y = y % 4;
@@ -304,7 +304,7 @@ fn dump_rgb5a3<W: Write>(
 ) -> Result<()> {
     let mut decoded = Vec::with_capacity(width * height * 4);
     let blocks_wide = (width + 3) / 4;
-    for y in 0..height {
+    for y in (0..height).rev() {
         let y = height - y - 1;
         let coarse_y = y / 4;
         let fine_y = y % 4;
@@ -334,7 +334,7 @@ fn dump_rgba8<W: Write>(
 ) -> Result<()> {
     let mut decoded = Vec::with_capacity(width * height * 4);
     let blocks_wide = (width + 3) / 4;
-    for y in 0..height {
+    for y in (0..height).rev() {
         let y = height - y - 1;
         let coarse_y = y / 4;
         let fine_y = y % 4;
@@ -367,7 +367,7 @@ fn dump_cmpr<W: Write>(
 ) -> Result<()> {
     let mut decoded = Vec::with_capacity(width * height * 4);
     let blocks_wide = (width + 7) / 8;
-    for y in 0..height {
+    for y in (0..height).rev() {
         let y = height - y - 1;
         let coarse_y = y / 8;
         for x in 0..width {

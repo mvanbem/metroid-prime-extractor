@@ -1,5 +1,7 @@
 /out
 /target
-Cargo.lock
+*.bin
 *.blend*
-*.dae
+*.glb
+*.gltf
+*.png
