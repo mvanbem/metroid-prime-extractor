@@ -80,6 +80,10 @@ pub struct SceneIndex(pub usize);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(transparent)]
+pub struct SkinIndex(pub usize);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(transparent)]
 pub struct TextureIndex(pub usize);
 
 #[derive(Clone, Debug, Serialize)]
@@ -106,6 +110,8 @@ pub struct Gltf {
     pub scene: Option<SceneIndex>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub scenes: Vec<Scene>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub skins: Vec<Skin>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub textures: Vec<Texture>,
 }
@@ -290,6 +296,8 @@ pub struct Node {
     pub transform: Transform,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mesh: Option<MeshIndex>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skin: Option<SkinIndex>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -375,6 +383,16 @@ impl Serialize for SamplerWrap {
 pub struct Scene {
     pub name: String,
     pub nodes: Vec<NodeIndex>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Skin {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inverse_bind_matrices: Option<AccessorIndex>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skeleton: Option<NodeIndex>,
+    pub joints: Vec<NodeIndex>,
 }
 
 #[derive(Clone, Debug, Serialize)]

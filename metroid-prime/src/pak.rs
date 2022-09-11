@@ -1,3 +1,6 @@
+use std::collections::{hash_map, HashMap};
+use std::rc::Rc;
+
 use anyhow::{bail, Result};
 use flate2::{Decompress, FlushDecompress};
 use gamecube::bytes::ReadFixedCapacityAsciiCStringExt;
@@ -73,6 +76,14 @@ impl<'a> Pak<'a> {
         self.resource_table
             .iter()
             .find(|entry| entry.file_id == file_id)
+            .map(ResourceTableEntry::data)
+            .transpose()
+    }
+
+    pub fn data_with_fourcc(&self, file_id: u32, fourcc: &str) -> Result<Option<Vec<u8>>> {
+        self.resource_table
+            .iter()
+            .find(|entry| entry.file_id == file_id && &entry.fourcc == fourcc)
             .map(ResourceTableEntry::data)
             .transpose()
     }
@@ -162,5 +173,34 @@ impl<'a> ResourceTableEntry<'a> {
             }
             _ => bail!("Unexpected compression: {}", self.compression),
         }
+    }
+}
+
+pub struct PakCache<'a> {
+    pak: Pak<'a>,
+    data_by_file_id: HashMap<(u32, String), Option<Rc<Vec<u8>>>>,
+}
+
+impl<'a> PakCache<'a> {
+    pub fn new(pak: Pak<'a>) -> Self {
+        Self {
+            pak,
+            data_by_file_id: HashMap::new(),
+        }
+    }
+
+    pub fn entry(&self, name: &str) -> Option<&NameTableEntry> {
+        self.pak.entry(name)
+    }
+
+    pub fn data_with_fourcc(&mut self, file_id: u32, fourcc: &str) -> Result<Option<Rc<Vec<u8>>>> {
+        Ok(
+            match self.data_by_file_id.entry((file_id, fourcc.to_string())) {
+                hash_map::Entry::Occupied(entry) => entry.get().clone(),
+                hash_map::Entry::Vacant(entry) => entry
+                    .insert(self.pak.data_with_fourcc(file_id, fourcc)?.map(Rc::new))
+                    .clone(),
+            },
+        )
     }
 }

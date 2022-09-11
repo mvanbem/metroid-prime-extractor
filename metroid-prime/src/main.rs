@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -13,15 +14,17 @@ use gamecube::disc::Header;
 use gamecube::{Disc, ReadTypedExt};
 use gltf::Gltf;
 use memmap::Mmap;
-use nalgebra::Vector3;
+use nalgebra::{Isometry3, UnitQuaternion, Vector3};
 
 use crate::ancs::Ancs;
 use crate::cmdl::Cmdl;
 use crate::mesh::CanonicalMesh;
-use crate::pak::Pak;
+use crate::pak::{Pak, PakCache};
 
 mod ancs;
+mod cinf;
 mod cmdl;
+mod cskr;
 mod gx;
 mod mesh;
 mod pak;
@@ -43,32 +46,25 @@ fn main() -> Result<()> {
     let disc = Disc::new(&*disc_mmap)?;
     verify_disc(disc.header())?;
 
-    let pak = Pak::new(
+    let mut pak = PakCache::new(Pak::new(
         disc.find_file("SamusGun.pak".as_ref())?
             .expect("Couldn't find SamusGun.pak")
             .data(),
-    )?;
+    )?);
     let wave_ancs_pak_entry = pak.entry("Wave").expect("Couldn't find Wave resource");
-    assert_eq!(wave_ancs_pak_entry.fourcc(), "ANCS");
     println!("SamusGun.pak/Wave");
     let wave_ancs: Ancs = pak
-        .data(wave_ancs_pak_entry.file_id())?
+        .data_with_fourcc(wave_ancs_pak_entry.file_id(), "ANCS")?
         .unwrap()
         .as_slice()
         .read_typed()?;
-    for wave_character in &wave_ancs.character_set.characters {
+    for (character_index, wave_character) in wave_ancs.character_set.characters.iter().enumerate() {
         if wave_character.name != "Wave" {
             continue;
         }
         println!("    Character: {}", wave_character.name);
-        let wave_model_cmdl: Cmdl = pak
-            .data(wave_character.model_id)?
-            .unwrap()
-            .as_slice()
-            .read_typed()?;
-        let mesh = CanonicalMesh::new(&pak, &wave_model_cmdl, 0)?;
-        // export_collada(&mesh)?;
-        export_gltf(&pak, &mesh)?;
+        let mesh = CanonicalMesh::new(&mut pak, &wave_ancs, character_index, 0)?;
+        export_gltf(&mut pak, &mesh)?;
     }
 
     Ok(())
@@ -139,7 +135,7 @@ fn process_all_resources(disc: &Disc) -> Result<()> {
     Ok(())
 }
 
-fn export_gltf(pak: &Pak, mesh: &CanonicalMesh) -> Result<()> {
+fn export_gltf(pak: &mut PakCache, mesh: &CanonicalMesh) -> Result<()> {
     let mut file = BufWriter::new(File::create("gltf_export.gltf")?);
     make_gltf_document(pak, mesh)?.to_writer_pretty(&mut file)?;
     file.flush()?;
@@ -147,11 +143,13 @@ fn export_gltf(pak: &Pak, mesh: &CanonicalMesh) -> Result<()> {
     Ok(())
 }
 
-fn make_gltf_document(pak: &Pak, mesh: &CanonicalMesh) -> Result<Gltf> {
-    const ATTRIBUTE_STRIDE: usize = 32;
+fn make_gltf_document(pak: &mut PakCache, mesh: &CanonicalMesh) -> Result<Gltf> {
+    const ATTRIBUTE_STRIDE: usize = 52;
     const POSITION_OFFSET: usize = 0;
     const NORMAL_OFFSET: usize = 12;
     const TEXCOORD0_OFFSET: usize = 24;
+    const JOINTS0_OFFSET: usize = 32;
+    const WEIGHTS0_OFFSET: usize = 36;
 
     // Export all referenced textures and build glTF materials that refer to them.
     let mut images = Vec::new();
@@ -162,10 +160,10 @@ fn make_gltf_document(pak: &Pak, mesh: &CanonicalMesh) -> Result<Gltf> {
 
         // Export the texture to a file.
         let texture_data = pak
-            .data(texture_id)?
+            .data_with_fourcc(texture_id, "TXTR")?
             .ok_or_else(|| anyhow!("Texture 0x{texture_id:08x} not found"))?;
         let mut file = BufWriter::new(File::create(&filename)?);
-        txtr::dump(&texture_data, &mut file)?;
+        txtr::dump(texture_data.as_slice(), &mut file)?;
         file.flush()?;
         drop(file);
 
@@ -194,15 +192,56 @@ fn make_gltf_document(pak: &Pak, mesh: &CanonicalMesh) -> Result<Gltf> {
         });
     }
 
+    let mut nodes = Vec::new();
+    let mut joints = Vec::new();
+    let mut joints_by_bone_id = HashMap::new();
+    let skeleton_root_node_index = extract_nodes_from_bone(
+        &mut nodes,
+        &mut joints,
+        &mut joints_by_bone_id,
+        Vector3::zeros(),
+        &mesh.skeleton,
+    );
+    let mut inverse_bind_pose_buffer = Vec::new();
+    for node_index in &joints {
+        let matrix = match nodes[node_index.0].transform {
+            gltf::Transform::Decomposed {
+                translation: Some(translation),
+                ..
+            } => Isometry3::from_parts(translation, UnitQuaternion::identity())
+                .inverse()
+                .to_matrix(),
+            _ => unreachable!(),
+        };
+        for entry in &matrix {
+            inverse_bind_pose_buffer.write_f32::<LittleEndian>(*entry)?;
+        }
+    }
+    let skin = gltf::Skin {
+        inverse_bind_matrices: Some(gltf::AccessorIndex(0)),
+        skeleton: None,
+        joints,
+    };
+
     // Process all surfaces into index and attribute buffers, generating glTF accessors and mesh
     // primitives that refer to them.
-    let mut index_buffer = vec![];
-    let mut attribute_buffer = vec![];
-    let mut accessors = Vec::new();
+    let mut index_buffer = Vec::new();
+    let mut attribute_buffer = Vec::new();
+    let mut accessors = vec![gltf::Accessor {
+        buffer_view: Some(gltf::BufferViewIndex(2)),
+        byte_offset: 0,
+        type_: gltf::AccessorType::Mat4,
+        component_type: gltf::AccessorComponentType::Float,
+        count: inverse_bind_pose_buffer.len() / 64,
+        min: None,
+        max: None,
+    }];
     let mut mesh_primitives = Vec::new();
     for surface in &mesh.surfaces {
         assert_eq!(surface.positions.len(), surface.normals.len());
         assert_eq!(surface.positions.len(), surface.texcoords.len());
+        assert_eq!(surface.positions.len(), surface.bone_ids.len());
+        assert_eq!(surface.positions.len(), surface.weights.len());
 
         let first_texture_index = surface.texture_indices[0];
 
@@ -212,11 +251,13 @@ fn make_gltf_document(pak: &Pak, mesh: &CanonicalMesh) -> Result<Gltf> {
         let mut count = 0;
         let mut min_position = Vector3::repeat(f32::INFINITY);
         let mut max_position = Vector3::repeat(f32::NEG_INFINITY);
-        for ((position, normal), texcoord) in surface
+        for ((((position, normal), texcoord), &bone_id), &weight) in surface
             .positions
             .iter()
             .zip(surface.normals.iter())
             .zip(surface.texcoords.iter())
+            .zip(surface.bone_ids.iter())
+            .zip(surface.weights.iter())
         {
             index_buffer.write_u16::<LittleEndian>(count as u16)?;
             attribute_buffer.write_f32::<LittleEndian>(position[0])?;
@@ -227,6 +268,14 @@ fn make_gltf_document(pak: &Pak, mesh: &CanonicalMesh) -> Result<Gltf> {
             attribute_buffer.write_f32::<LittleEndian>(normal[2])?;
             attribute_buffer.write_f32::<LittleEndian>(texcoord[0])?;
             attribute_buffer.write_f32::<LittleEndian>(texcoord[1])?;
+            attribute_buffer.write_u8(joints_by_bone_id[&bone_id])?;
+            attribute_buffer.write_u8(0)?;
+            attribute_buffer.write_u8(0)?;
+            attribute_buffer.write_u8(0)?;
+            attribute_buffer.write_f32::<LittleEndian>(weight)?;
+            attribute_buffer.write_f32::<LittleEndian>(0.0)?;
+            attribute_buffer.write_f32::<LittleEndian>(0.0)?;
+            attribute_buffer.write_f32::<LittleEndian>(0.0)?;
             count += 1;
             min_position = min_position.inf(&(*position).into());
             max_position = max_position.sup(&(*position).into());
@@ -269,6 +318,24 @@ fn make_gltf_document(pak: &Pak, mesh: &CanonicalMesh) -> Result<Gltf> {
             min: None,
             max: None,
         });
+        accessors.push(gltf::Accessor {
+            buffer_view: Some(gltf::BufferViewIndex(1)),
+            byte_offset: attribute_byte_offset + JOINTS0_OFFSET,
+            type_: gltf::AccessorType::Vec4,
+            component_type: gltf::AccessorComponentType::UnsignedByte,
+            count,
+            min: None,
+            max: None,
+        });
+        accessors.push(gltf::Accessor {
+            buffer_view: Some(gltf::BufferViewIndex(1)),
+            byte_offset: attribute_byte_offset + WEIGHTS0_OFFSET,
+            type_: gltf::AccessorType::Vec4,
+            component_type: gltf::AccessorComponentType::Float,
+            count,
+            min: None,
+            max: None,
+        });
 
         mesh_primitives.push(gltf::MeshPrimitive {
             mode: gltf::MeshPrimitiveMode::Triangles,
@@ -286,17 +353,33 @@ fn make_gltf_document(pak: &Pak, mesh: &CanonicalMesh) -> Result<Gltf> {
                     gltf::MeshAttribute::Texcoord(0),
                     gltf::AccessorIndex(accessor_base_index + 3),
                 ),
+                (
+                    gltf::MeshAttribute::Joints(0),
+                    gltf::AccessorIndex(accessor_base_index + 4),
+                ),
+                (
+                    gltf::MeshAttribute::Weights(0),
+                    gltf::AccessorIndex(accessor_base_index + 5),
+                ),
             ]
             .into_iter()
             .collect(),
             material: Some(gltf::MaterialIndex(first_texture_index)),
         });
     }
+    let mesh_node_index = gltf::NodeIndex(nodes.len());
+    nodes.push(gltf::Node {
+        name: "mesh".to_string(),
+        mesh: Some(gltf::MeshIndex(0)),
+        skin: Some(gltf::SkinIndex(0)),
+        ..Default::default()
+    });
 
     // Write out the index and attribute buffers to a single externally referenced file.
     let mut buffer_file = BufWriter::new(File::create("gltf_export.bin")?);
     buffer_file.write_all(&index_buffer)?;
     buffer_file.write_all(&attribute_buffer)?;
+    buffer_file.write_all(&inverse_bind_pose_buffer)?;
     buffer_file.flush()?;
     drop(buffer_file);
 
@@ -307,7 +390,9 @@ fn make_gltf_document(pak: &Pak, mesh: &CanonicalMesh) -> Result<Gltf> {
             version: gltf::Version,
         },
         buffers: vec![gltf::Buffer {
-            byte_length: index_buffer.len() + attribute_buffer.len(),
+            byte_length: index_buffer.len()
+                + attribute_buffer.len()
+                + inverse_bind_pose_buffer.len(),
             uri: "gltf_export.bin".to_string(),
         }],
         buffer_views: vec![
@@ -323,17 +408,19 @@ fn make_gltf_document(pak: &Pak, mesh: &CanonicalMesh) -> Result<Gltf> {
                 byte_length: attribute_buffer.len(),
                 byte_stride: Some(ATTRIBUTE_STRIDE),
             },
+            gltf::BufferView {
+                buffer: gltf::BufferIndex(0),
+                byte_offset: index_buffer.len() + attribute_buffer.len(),
+                byte_length: inverse_bind_pose_buffer.len(),
+                byte_stride: None,
+            },
         ],
         images,
         materials,
         meshes: vec![gltf::Mesh {
             primitives: mesh_primitives,
         }],
-        nodes: vec![gltf::Node {
-            name: "object".to_string(),
-            mesh: Some(gltf::MeshIndex(0)),
-            ..Default::default()
-        }],
+        nodes,
         samplers: vec![gltf::Sampler {
             mag_filter: gltf::SamplerMagFilter::Linear,
             min_filter: gltf::SamplerMinFilter::LinearMipmapLinear,
@@ -343,11 +430,46 @@ fn make_gltf_document(pak: &Pak, mesh: &CanonicalMesh) -> Result<Gltf> {
         scene: Some(gltf::SceneIndex(0)),
         scenes: vec![gltf::Scene {
             name: "scene".to_string(),
-            nodes: vec![gltf::NodeIndex(0)],
+            nodes: vec![mesh_node_index, skeleton_root_node_index],
             ..Default::default()
         }],
+        skins: vec![skin],
         textures,
     })
+}
+
+fn extract_nodes_from_bone(
+    nodes: &mut Vec<gltf::Node>,
+    joints: &mut Vec<gltf::NodeIndex>,
+    joints_by_bone_id: &mut HashMap<u32, u8>,
+    origin: Vector3<f32>,
+    bone: &mesh::CanonicalBone,
+) -> gltf::NodeIndex {
+    let position = Vector3::from_column_slice(&bone.position).into();
+    let children = bone
+        .children
+        .iter()
+        .map(|x| extract_nodes_from_bone(nodes, joints, joints_by_bone_id, position, x))
+        .collect();
+
+    let index = gltf::NodeIndex(nodes.len());
+    nodes.push(gltf::Node {
+        name: bone.name.clone(),
+        children,
+        transform: gltf::Transform::Decomposed {
+            translation: Some((position - origin).into()),
+            rotation: None,
+            scale: None,
+        },
+        mesh: None,
+        skin: None,
+    });
+
+    let joint = joints.len();
+    joints.push(index);
+    joints_by_bone_id.insert(bone.id, joint.try_into().unwrap());
+
+    index
 }
 
 fn verify_disc(header: &Header) -> Result<()> {

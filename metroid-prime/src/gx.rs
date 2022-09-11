@@ -16,6 +16,8 @@ impl DisplayList {
         position_data: &[u8],
         normal_data: &[u8],
         uv_float_data: &[u8],
+        joints: &[u32],
+        weights: &[f32],
     ) -> Result<Vec<Batch>> {
         let mut r = self.data.as_slice();
         let mut batches = Vec::new();
@@ -35,6 +37,8 @@ impl DisplayList {
                     position_data,
                     normal_data,
                     uv_float_data,
+                    joints,
+                    weights,
                 )?),
                 0x98 => batches.push(Self::parse_batch(
                     &mut r,
@@ -43,6 +47,8 @@ impl DisplayList {
                     position_data,
                     normal_data,
                     uv_float_data,
+                    joints,
+                    weights,
                 )?),
                 0xa0 => batches.push(Self::parse_batch(
                     &mut r,
@@ -51,6 +57,8 @@ impl DisplayList {
                     position_data,
                     normal_data,
                     uv_float_data,
+                    joints,
+                    weights,
                 )?),
                 _ => bail!("unexpected GX primitive type: 0x{:02x}", primitive_type),
             }
@@ -65,18 +73,22 @@ impl DisplayList {
         position_data: &[u8],
         normal_data: &[u8],
         uv_float_data: &[u8],
+        bone_ids: &[u32],
+        weights: &[f32],
     ) -> Result<Batch> {
         let count = r.read_u16()?;
         for _ in 0..count {
             // Position
             assert!((vertex_attr_flags & 0x3) != 0);
-            let position = {
+            let (position, bone_id, weight) = {
                 let index = r.read_u16()?;
                 let mut data = &position_data[index as usize * 12..];
                 let x = f32::from_bits(data.read_u32()?);
                 let y = f32::from_bits(data.read_u32()?);
                 let z = f32::from_bits(data.read_u32()?);
-                [x, y, z]
+                let bone_id = bone_ids[index as usize];
+                let weight = weights[index as usize];
+                ([x, y, z], bone_id, weight)
             };
             // Normal
             assert!((vertex_attr_flags & 0xc) != 0);
@@ -97,7 +109,7 @@ impl DisplayList {
                 unimplemented!("Vertex attribute: Color 1")
             }
             // Tex 0
-            let uv = if (vertex_attr_flags & 0x300) != 0 {
+            let texcoord = if (vertex_attr_flags & 0x300) != 0 {
                 // TODO: Look at material to know whether float or short UV coordinates are read.
                 let index = r.read_u16()?;
                 let mut data = &uv_float_data[index as usize * 8..];
@@ -134,7 +146,7 @@ impl DisplayList {
                 unimplemented!("Vertex attribute: Tex 6")
             }
 
-            vertex_handler.handle_vertex(position, normal, uv);
+            vertex_handler.handle_vertex(position, normal, texcoord, bone_id, weight);
         }
 
         Ok(vertex_handler.finish())
@@ -150,7 +162,14 @@ impl ReadFrom for DisplayList {
 }
 
 trait VertexHandler {
-    fn handle_vertex(&mut self, position: [f32; 3], normal: [f32; 3], texcoord: Option<[f32; 2]>);
+    fn handle_vertex(
+        &mut self,
+        position: [f32; 3],
+        normal: [f32; 3],
+        texcoord: Option<[f32; 2]>,
+        bone_id: u32,
+        weight: f32,
+    );
     fn finish(self) -> Batch;
 }
 
@@ -158,12 +177,18 @@ struct Triangles {
     positions: Vec<[f32; 3]>,
     normals: Vec<[f32; 3]>,
     texcoords: Vec<[f32; 2]>,
+    bone_ids: Vec<u32>,
+    weights: Vec<f32>,
     position_a: [f32; 3],
     position_b: [f32; 3],
     normal_a: [f32; 3],
     normal_b: [f32; 3],
     texcoord_a: [f32; 2],
     texcoord_b: [f32; 2],
+    bone_id_a: u32,
+    bone_id_b: u32,
+    weight_a: f32,
+    weight_b: f32,
     // 0: empty buffer
     // 1: one buffered vertex
     // 2: two buffered vertices
@@ -176,19 +201,32 @@ impl Triangles {
             positions: Vec::new(),
             normals: Vec::new(),
             texcoords: Vec::new(),
+            bone_ids: Vec::new(),
+            weights: Vec::new(),
             position_a: [0.0; 3],
             position_b: [0.0; 3],
             normal_a: [0.0; 3],
             normal_b: [0.0; 3],
             texcoord_a: [0.0; 2],
             texcoord_b: [0.0; 2],
+            bone_id_a: 0,
+            bone_id_b: 0,
+            weight_a: 0.0,
+            weight_b: 0.0,
             state: 0,
         }
     }
 }
 
 impl VertexHandler for Triangles {
-    fn handle_vertex(&mut self, position: [f32; 3], normal: [f32; 3], texcoord: Option<[f32; 2]>) {
+    fn handle_vertex(
+        &mut self,
+        position: [f32; 3],
+        normal: [f32; 3],
+        texcoord: Option<[f32; 2]>,
+        bone_id: u32,
+        weight: f32,
+    ) {
         match self.state {
             0 => {
                 self.position_a = position;
@@ -196,6 +234,8 @@ impl VertexHandler for Triangles {
                 if let Some(texcoord) = texcoord {
                     self.texcoord_a = texcoord;
                 }
+                self.bone_id_a = bone_id;
+                self.weight_a = weight;
                 self.state = 1;
             }
             1 => {
@@ -204,6 +244,8 @@ impl VertexHandler for Triangles {
                 if let Some(texcoord) = texcoord {
                     self.texcoord_b = texcoord;
                 }
+                self.bone_id_b = bone_id;
+                self.weight_b = weight;
                 self.state = 2;
             }
             2 => {
@@ -218,6 +260,12 @@ impl VertexHandler for Triangles {
                     self.texcoords.push(self.texcoord_b);
                     self.texcoords.push(texcoord);
                 }
+                self.bone_ids.push(self.bone_id_a);
+                self.bone_ids.push(self.bone_id_b);
+                self.bone_ids.push(bone_id);
+                self.weights.push(self.weight_a);
+                self.weights.push(self.weight_b);
+                self.weights.push(weight);
                 self.state = 0;
             }
             _ => unreachable!(),
@@ -230,6 +278,8 @@ impl VertexHandler for Triangles {
             positions: self.positions,
             normals: self.normals,
             texcoords: self.texcoords,
+            bone_ids: self.bone_ids,
+            weights: self.weights,
         }
     }
 }
@@ -238,12 +288,18 @@ struct TriangleStrip {
     positions: Vec<[f32; 3]>,
     normals: Vec<[f32; 3]>,
     texcoords: Vec<[f32; 2]>,
+    bone_ids: Vec<u32>,
+    weights: Vec<f32>,
     position_a: [f32; 3],
     position_b: [f32; 3],
     normal_a: [f32; 3],
     normal_b: [f32; 3],
     texcoord_a: [f32; 2],
     texcoord_b: [f32; 2],
+    bone_id_a: u32,
+    bone_id_b: u32,
+    weight_a: f32,
+    weight_b: f32,
     // 0: empty buffer
     // 1: one buffered vertex
     // 2: two buffered vertices, even parity
@@ -257,30 +313,55 @@ impl TriangleStrip {
             positions: Vec::new(),
             normals: Vec::new(),
             texcoords: Vec::new(),
+            bone_ids: Vec::new(),
+            weights: Vec::new(),
             position_a: [0.0; 3],
             position_b: [0.0; 3],
             normal_a: [0.0; 3],
             normal_b: [0.0; 3],
             texcoord_a: [0.0; 2],
             texcoord_b: [0.0; 2],
+            bone_id_a: 0,
+            bone_id_b: 0,
+            weight_a: 0.0,
+            weight_b: 0.0,
             state: 0,
         }
     }
 
-    fn shift(&mut self, position: [f32; 3], normal: [f32; 3], texcoord: Option<[f32; 2]>) {
+    fn shift(
+        &mut self,
+        position: [f32; 3],
+        normal: [f32; 3],
+        texcoord: Option<[f32; 2]>,
+        bone_id: u32,
+        weight: f32,
+    ) {
         self.position_a = self.position_b;
         self.normal_a = self.normal_b;
         self.texcoord_a = self.texcoord_b;
+        self.bone_id_a = self.bone_id_b;
+        self.weight_a = self.weight_b;
+
         self.position_b = position;
         self.normal_b = normal;
         if let Some(texcoord) = texcoord {
             self.texcoord_b = texcoord;
         }
+        self.bone_id_b = bone_id;
+        self.weight_b = weight;
     }
 }
 
 impl VertexHandler for TriangleStrip {
-    fn handle_vertex(&mut self, position: [f32; 3], normal: [f32; 3], texcoord: Option<[f32; 2]>) {
+    fn handle_vertex(
+        &mut self,
+        position: [f32; 3],
+        normal: [f32; 3],
+        texcoord: Option<[f32; 2]>,
+        bone_id: u32,
+        weight: f32,
+    ) {
         match self.state {
             0 => {
                 self.position_a = position;
@@ -288,6 +369,8 @@ impl VertexHandler for TriangleStrip {
                 if let Some(texcoord) = texcoord {
                     self.texcoord_a = texcoord;
                 }
+                self.bone_id_a = bone_id;
+                self.weight_a = weight;
                 self.state = 1;
             }
             1 => {
@@ -296,6 +379,8 @@ impl VertexHandler for TriangleStrip {
                 if let Some(texcoord) = texcoord {
                     self.texcoord_b = texcoord;
                 }
+                self.bone_id_b = bone_id;
+                self.weight_b = weight;
                 self.state = 2;
             }
             2 => {
@@ -310,7 +395,13 @@ impl VertexHandler for TriangleStrip {
                     self.texcoords.push(self.texcoord_b);
                     self.texcoords.push(texcoord);
                 }
-                self.shift(position, normal, texcoord);
+                self.bone_ids.push(self.bone_id_a);
+                self.bone_ids.push(self.bone_id_b);
+                self.bone_ids.push(bone_id);
+                self.weights.push(self.weight_a);
+                self.weights.push(self.weight_b);
+                self.weights.push(weight);
+                self.shift(position, normal, texcoord, bone_id, weight);
                 self.state = 3;
             }
             3 => {
@@ -325,7 +416,13 @@ impl VertexHandler for TriangleStrip {
                     self.texcoords.push(self.texcoord_a);
                     self.texcoords.push(texcoord);
                 }
-                self.shift(position, normal, texcoord);
+                self.bone_ids.push(self.bone_id_b);
+                self.bone_ids.push(self.bone_id_a);
+                self.bone_ids.push(bone_id);
+                self.weights.push(self.weight_b);
+                self.weights.push(self.weight_a);
+                self.weights.push(weight);
+                self.shift(position, normal, texcoord, bone_id, weight);
                 self.state = 2;
             }
             _ => unreachable!(),
@@ -337,6 +434,8 @@ impl VertexHandler for TriangleStrip {
             positions: self.positions,
             normals: self.normals,
             texcoords: self.texcoords,
+            bone_ids: self.bone_ids,
+            weights: self.weights,
         }
     }
 }
@@ -345,12 +444,18 @@ struct TriangleFan {
     positions: Vec<[f32; 3]>,
     normals: Vec<[f32; 3]>,
     texcoords: Vec<[f32; 2]>,
+    bone_ids: Vec<u32>,
+    weights: Vec<f32>,
     position_a: [f32; 3],
     position_b: [f32; 3],
     normal_a: [f32; 3],
     normal_b: [f32; 3],
     texcoord_a: [f32; 2],
     texcoord_b: [f32; 2],
+    bone_id_a: u32,
+    bone_id_b: u32,
+    weight_a: f32,
+    weight_b: f32,
     // 0: empty buffer
     // 1: one buffered vertex
     // 2: two buffered vertices
@@ -363,27 +468,49 @@ impl TriangleFan {
             positions: Vec::new(),
             normals: Vec::new(),
             texcoords: Vec::new(),
+            bone_ids: Vec::new(),
+            weights: Vec::new(),
             position_a: [0.0; 3],
             position_b: [0.0; 3],
             normal_a: [0.0; 3],
             normal_b: [0.0; 3],
             texcoord_a: [0.0; 2],
             texcoord_b: [0.0; 2],
+            bone_id_a: 0,
+            bone_id_b: 0,
+            weight_a: 0.0,
+            weight_b: 0.0,
             state: 0,
         }
     }
 
-    fn shift(&mut self, position: [f32; 3], normal: [f32; 3], texcoord: Option<[f32; 2]>) {
+    fn shift(
+        &mut self,
+        position: [f32; 3],
+        normal: [f32; 3],
+        texcoord: Option<[f32; 2]>,
+        bone_id: u32,
+        weight: f32,
+    ) {
         self.position_b = position;
         self.normal_b = normal;
         if let Some(texcoord) = texcoord {
             self.texcoord_b = texcoord;
         }
+        self.bone_id_b = bone_id;
+        self.weight_b = weight;
     }
 }
 
 impl VertexHandler for TriangleFan {
-    fn handle_vertex(&mut self, position: [f32; 3], normal: [f32; 3], texcoord: Option<[f32; 2]>) {
+    fn handle_vertex(
+        &mut self,
+        position: [f32; 3],
+        normal: [f32; 3],
+        texcoord: Option<[f32; 2]>,
+        bone_id: u32,
+        weight: f32,
+    ) {
         match self.state {
             0 => {
                 self.position_a = position;
@@ -391,10 +518,12 @@ impl VertexHandler for TriangleFan {
                 if let Some(texcoord) = texcoord {
                     self.texcoord_a = texcoord;
                 }
+                self.bone_id_a = bone_id;
+                self.weight_a = weight;
                 self.state = 1;
             }
             1 => {
-                self.shift(position, normal, texcoord);
+                self.shift(position, normal, texcoord, bone_id, weight);
                 self.state = 2;
             }
             2 => {
@@ -409,13 +538,16 @@ impl VertexHandler for TriangleFan {
                     self.texcoords.push(self.texcoord_b);
                     self.texcoords.push(texcoord);
                 }
-                self.shift(position, normal, texcoord);
+                self.bone_ids.push(self.bone_id_a);
+                self.bone_ids.push(self.bone_id_b);
+                self.bone_ids.push(bone_id);
+                self.weights.push(self.weight_a);
+                self.weights.push(self.weight_b);
+                self.weights.push(weight);
+                self.shift(position, normal, texcoord, bone_id, weight);
             }
             _ => unreachable!(),
         }
-
-        self.position_b = position;
-        self.normal_b = normal;
     }
 
     fn finish(self) -> Batch {
@@ -423,6 +555,8 @@ impl VertexHandler for TriangleFan {
             positions: self.positions,
             normals: self.normals,
             texcoords: self.texcoords,
+            bone_ids: self.bone_ids,
+            weights: self.weights,
         }
     }
 }
@@ -432,4 +566,6 @@ pub struct Batch {
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
     pub texcoords: Vec<[f32; 2]>,
+    pub bone_ids: Vec<u32>,
+    pub weights: Vec<f32>,
 }
