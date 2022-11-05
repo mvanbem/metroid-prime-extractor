@@ -5,21 +5,26 @@ use crate::ancs::Ancs;
 use crate::cinf::Cinf;
 use crate::cmdl::Cmdl;
 use crate::cskr::Cskr;
+use crate::gx::{SkinnedVertexDescriptor, StaticVertexDescriptor};
 use crate::pak::PakCache;
 
 pub struct CanonicalMesh {
-    pub skeleton: CanonicalBone,
-    pub skin: Cskr,
+    pub skin: Option<CanonicalMeshSkin>,
     pub surfaces: Vec<CanonicalMeshSurface>,
     pub texture_ids: Vec<u32>,
 }
 
+pub struct CanonicalMeshSkin {
+    pub skeleton: CanonicalMeshBone,
+    pub skin: Cskr,
+}
+
 #[derive(Debug)]
-pub struct CanonicalBone {
+pub struct CanonicalMeshBone {
     pub name: String,
     pub id: u32,
     pub position: [f32; 3],
-    pub children: Vec<CanonicalBone>,
+    pub children: Vec<CanonicalMeshBone>,
 }
 
 pub struct CanonicalMeshSurface {
@@ -32,7 +37,51 @@ pub struct CanonicalMeshSurface {
 }
 
 impl CanonicalMesh {
-    pub fn new(
+    pub fn from_cmdl(cmdl: &Cmdl, material_set_index: usize) -> Result<Self> {
+        let material_set = &cmdl.materials[material_set_index];
+        let mut surfaces = Vec::new();
+        for surface in &cmdl.surfaces {
+            let mut positions = Vec::new();
+            let mut normals = Vec::new();
+            let mut texcoords = Vec::new();
+
+            let material = &material_set.materials[surface.material_index as usize];
+            let batches = surface.display_list.parse::<StaticVertexDescriptor>(
+                material.vertex_attr_flags,
+                &cmdl.position_data,
+                &cmdl.normal_data,
+                &cmdl.uv_float_data,
+                &(),
+                &(),
+            )?;
+            for batch in batches {
+                positions.extend_from_slice(&batch.positions);
+                normals.extend_from_slice(&batch.normals);
+                texcoords.extend_from_slice(&batch.texcoords);
+            }
+
+            surfaces.push(CanonicalMeshSurface {
+                texture_indices: material
+                    .texture_indices
+                    .iter()
+                    .map(|&x| x as usize)
+                    .collect(),
+                positions,
+                normals,
+                texcoords,
+                bone_ids: Vec::new(),
+                weights: Vec::new(),
+            });
+        }
+
+        Ok(Self {
+            skin: None,
+            surfaces,
+            texture_ids: material_set.texture_ids.clone(),
+        })
+    }
+
+    pub fn from_ancs(
         pak: &mut PakCache,
         ancs: &Ancs,
         character_index: usize,
@@ -75,7 +124,7 @@ impl CanonicalMesh {
             let mut weights = Vec::new();
 
             let material = &material_set.materials[surface.material_index as usize];
-            let batches = surface.display_list.parse(
+            let batches = surface.display_list.parse::<SkinnedVertexDescriptor>(
                 material.vertex_attr_flags,
                 &cmdl.position_data,
                 &cmdl.normal_data,
@@ -106,15 +155,14 @@ impl CanonicalMesh {
         }
 
         Ok(Self {
-            skeleton,
-            skin,
+            skin: Some(CanonicalMeshSkin { skeleton, skin }),
             surfaces,
             texture_ids: material_set.texture_ids.clone(),
         })
     }
 }
 
-fn interpret_bone(cinf: &Cinf, bone_id: u32) -> CanonicalBone {
+fn interpret_bone(cinf: &Cinf, bone_id: u32) -> CanonicalMeshBone {
     let bone = cinf.bones.iter().find(|x| x.bone_id == bone_id).unwrap();
     let name = cinf
         .bone_names
@@ -134,7 +182,7 @@ fn interpret_bone(cinf: &Cinf, bone_id: u32) -> CanonicalBone {
             children.push(interpret_bone(cinf, linked_bone_id));
         }
     }
-    CanonicalBone {
+    CanonicalMeshBone {
         name,
         id: bone_id,
         position: bone.position,
